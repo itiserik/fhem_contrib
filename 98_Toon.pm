@@ -110,7 +110,7 @@ sub Toon_DoAuth($){
   
     Log3 $hash, 4, "Toon -> FHEM: " . $resp;
 	
-	$decoded  = decode_json($resp);
+	$decoded  = decode_json($resp) if ($resp);
 	if ($decoded->{"success"})
 	{
 		$hash->{STATE}       = 'Authenticated';
