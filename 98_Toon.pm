@@ -24,8 +24,11 @@ sub Toon_Initialize($$)
 {
   my ($hash) = @_;
  $hash->{DefFn}    = "Toon_Define";
+ $hash->{UndefFn}   = "Toon_Undefine";
 # $hash->{SetFn}    = "Toon_Set";
-  $hash->{AttrList}= "disable:0,1 ".$readingFnAttributes;
+  $hash->{AttrList}= 	"disable:0,1".
+						" interval".
+						" ".$readingFnAttributes;
 
   Log3 $hash, 3, "Toon initialized";
 
@@ -50,7 +53,7 @@ sub Toon_Define($$)
   $hash->{STATE}       = 'Initialized';
   $hash->{helper}{Url} = "https://toonopafstand.eneco.nl/toonMobileBackendWeb/client/";
    
-  $hash->{interval} = $interval;
+  $attr{$name}{interval}=$interval if $interval;
   $hash->{helper}{username} = $username;
   $hash->{helper}{password} = $password;
 
@@ -73,30 +76,36 @@ sub Toon_DoAuth($){
   my ($data,$err,$resp,$decoded);
   my $name = $hash->{NAME};
   Log3 $hash, 3, "Toon doAuth";
-  $data = "username=".$hash->{helper}{username}."&password=".$hash->{helper}{password};
-   
-  ($err,$resp)    = HttpUtils_BlockingGet({
-    url           => $hash->{helper}{Url} . "login",
-    method        => "POST"	,
-    header        => "Content-Type: application/x-www-form-urlencoded",
-    data          => $data
-  });
   
-  $data = "" if( !$data );
-  $resp = "" if( !$resp );
-  
-  Log3 $hash, 4, "FHEM -> Toon: " . $data; 
-  Log3 $hash, 4, "Toon -> FHEM: " . $resp;
-  
-  $decoded  = decode_json($resp); 
-  Log3 $hash, 5, 'dec: ' . $decoded;
-  Log3 $hash, 5, 'cid: ' . $decoded->{'clientId'};
-  
-  
-  $hash->{helper}{clientId} = $decoded->{'clientId'};
-  $hash->{helper}{clientIdChecksum} = $decoded->{'clientIdChecksum'};
-  $hash->{helper}{agreementId} = $decoded->{'agreements'}[0]{'agreementId'};
-  $hash->{helper}{agreementIdChecksum} = $decoded->{'agreements'}[0]{'agreementIdChecksum'};
+  if (!$hash->{helper}{clientId}
+		|| !$hash->{helper}{clientIdChecksum}
+		|| !$hash->{helper}{agreementId}
+		|| !$hash->{helper}{agreementIdChecksum}) {
+	  $data = "username=".$hash->{helper}{username}."&password=".$hash->{helper}{password};
+	   
+	  ($err,$resp)    = HttpUtils_BlockingGet({
+		url           => $hash->{helper}{Url} . "login",
+		method        => "POST"	,
+		header        => "Content-Type: application/x-www-form-urlencoded",
+		data          => $data
+	  });
+	  
+	  $data = "" if( !$data );
+	  $resp = "" if( !$resp );
+	  
+	  Log3 $hash, 4, "FHEM -> Toon: " . $data; 
+	  Log3 $hash, 4, "Toon -> FHEM: " . $resp;
+	  
+	  $decoded  = decode_json($resp); 
+	  Log3 $hash, 5, 'dec: ' . $decoded;
+	  Log3 $hash, 5, 'cid: ' . $decoded->{'clientId'};
+	  
+	  
+	  $hash->{helper}{clientId} = $decoded->{'clientId'};
+	  $hash->{helper}{clientIdChecksum} = $decoded->{'clientIdChecksum'};
+	  $hash->{helper}{agreementId} = $decoded->{'agreements'}[0]{'agreementId'};
+	  $hash->{helper}{agreementIdChecksum} = $decoded->{'agreements'}[0]{'agreementIdChecksum'};
+	}
   $ug = Data::UUID->new;
   
   ($err,$resp)    = HttpUtils_BlockingGet({
@@ -114,12 +123,54 @@ sub Toon_DoAuth($){
 	if ($decoded->{"success"})
 	{
 		$hash->{STATE}       = 'Authenticated';
-		my $firstTrigger = gettimeofday() + $hash->{interval};
+		my $firstTrigger = gettimeofday() + AttrVal($name, 'interval', 30);
 		$hash->{TRIGGERTIME}     = $firstTrigger;
 		$hash->{TRIGGERTIME_FMT} = FmtDateTime($firstTrigger);
 		InternalTimer($firstTrigger, "Toon_Update", "update:$name", 0);
 	}
+	else
+	{
+		undef $hash->{helper}{clientId};
+		undef $hash->{helper}{clientIdChecksum};
+		undef $hash->{helper}{agreementId};
+		undef $hash->{helper}{agreementIdChecksum};
+		my $firstTrigger = gettimeofday() + 20;
+		$hash->{TRIGGERTIME}     = $firstTrigger;
+		$hash->{TRIGGERTIME_FMT} = FmtDateTime($firstTrigger);
+		RemoveInternalTimer("update:$name");
+		InternalTimer($firstTrigger, "Toon_DoAuth", "update:$name", 0);
+		Log3 $name, 5, "$name: InternalTimer set to call GetUpdate in 20 seconds to do reauth";
+		
+	}
   return undef;
+}
+
+sub Toon_Undefine($){
+
+	my ($hash,$arg) = @_;
+	my $name = $hash->{NAME};
+
+	my ($data,$err,$resp,$decoded);
+	Log3 $hash, 3, "Toon Undefine";
+
+	$hash->{helper}{clientId} = $decoded->{'clientId'};
+	return undef if (!$hash->{helper}{clientId} || !$hash->{helper}{clientIdChecksum});
+	
+
+	($err,$resp)    = HttpUtils_BlockingGet({
+		url           => $hash->{helper}{Url} . "auth/logout?clientId=".$hash->{helper}{clientId}.
+		"&clientIdChecksum=".$hash->{helper}{clientIdChecksum}.
+		"&random=".$ug->create_str(),
+		method        => "GET"
+	});
+
+	Log3 $hash, 4, "Toon -> FHEM: " . $resp;
+
+	$decoded  = decode_json($resp) if ($resp);
+	
+	$hash->{STATE}       = 'Logged off' if ($decoded->{"success"});
+
+	return undef;
 }
 
 #------------------------------------------------------------------------------
@@ -160,10 +211,18 @@ Log3 $hash, 4, "Toon data-> FHEM: " . $data;
 
     Toon_Parse_Result($hash, encode_json $returnObject);
   }
-
   elsif($data ne "")
   {
     Toon_Parse_Result($hash, $data);
+  }
+  else
+  {
+    $returnObject = {
+      success     => false,
+      description => "No data received."
+    };
+
+    Toon_Parse_Result($hash, encode_json $returnObject);
   }
 
   return undef;
@@ -176,7 +235,14 @@ sub Toon_Parse_Result($$$)
   my ($hash, $result) = @_;
   my $name = $hash->{NAME};
 
-  my $returnObject = decode_json $result;
+  my $returnObject = "";
+  eval
+	{
+		$returnObject = decode_json $result;
+	1;
+	} or do {
+		Log3 $hash, 4, "Toon json decode: " . $@;
+	};
 
   readingsBeginUpdate($hash);
   readingsBulkUpdate($hash, "description", $returnObject->{"description"}) if ($returnObject->{"description"});
@@ -195,10 +261,19 @@ sub Toon_Parse_Result($$$)
   
   	if ($returnObject->{"success"})
 	{
-		my $firstTrigger = gettimeofday() + $hash->{interval};
+		my $firstTrigger = gettimeofday() +  AttrVal($name, 'interval', 30);
 		$hash->{TRIGGERTIME}     = $firstTrigger;
 		$hash->{TRIGGERTIME_FMT} = FmtDateTime($firstTrigger);
 		InternalTimer($firstTrigger, "Toon_Update", "update:$name", 0);
+	}
+	else
+	{
+		my $firstTrigger = gettimeofday() + 2;
+		$hash->{TRIGGERTIME}     = $firstTrigger;
+		$hash->{TRIGGERTIME_FMT} = FmtDateTime($firstTrigger);
+		RemoveInternalTimer("update:$name");
+		InternalTimer($firstTrigger, "Toon_DoAuth", "update:$name", 0);
+		Log3 $name, 5, "$name: InternalTimer set to call GetUpdate in 2 seconds to do reauth";
 	}
 }
 
