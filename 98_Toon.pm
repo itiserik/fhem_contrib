@@ -96,9 +96,24 @@ sub Toon_DoAuth($){
 	  Log3 $hash, 4, "FHEM -> Toon: " . $data; 
 	  Log3 $hash, 4, "Toon -> FHEM: " . $resp;
 	  
-	  $decoded  = decode_json($resp); 
+		eval
+		{
+			$decoded = decode_json $resp;
+			1;
+		} or do {
+			Log3 $hash, 4, "Toon json decode: " . $@;
+			InternalTimer(gettimeofday() + 60, "Toon_DoAuth", "update:$name", 0);
+			return undef;
+		};
+		
 	  Log3 $hash, 5, 'dec: ' . $decoded;
 	  Log3 $hash, 5, 'cid: ' . $decoded->{'clientId'};
+	  
+	  if (!$decoded->{'result'}) {
+		  InternalTimer(gettimeofday() + 60, "Toon_DoAuth", "update:$name", 0);
+		  
+		  return undef;
+	  }
 	  
 	  
 	  $hash->{helper}{clientId} = $decoded->{'clientId'};
@@ -106,6 +121,7 @@ sub Toon_DoAuth($){
 	  $hash->{helper}{agreementId} = $decoded->{'agreements'}[0]{'agreementId'};
 	  $hash->{helper}{agreementIdChecksum} = $decoded->{'agreements'}[0]{'agreementIdChecksum'};
 	}
+		
   $ug = Data::UUID->new;
   
   ($err,$resp)    = HttpUtils_BlockingGet({
@@ -117,9 +133,19 @@ sub Toon_DoAuth($){
     method        => "GET"
   });
   
+	  $data = "" if( !$data );
+	  $resp = "" if( !$resp );
     Log3 $hash, 4, "Toon -> FHEM: " . $resp;
-	
-	$decoded  = decode_json($resp) if ($resp);
+		eval
+		{
+			$decoded = decode_json $resp;
+			1;
+		} or do {
+			Log3 $hash, 4, "Toon json decode: " . $@;
+			InternalTimer(gettimeofday() + 60, "Toon_DoAuth", "update:$name", 0);
+			return undef;
+		};
+	$decoded  = decode_json($resp);
 	if ($decoded->{"success"})
 	{
 		$hash->{STATE}       = 'Authenticated';
@@ -141,7 +167,7 @@ sub Toon_DoAuth($){
 		InternalTimer($firstTrigger, "Toon_DoAuth", "update:$name", 0);
 		Log3 $name, 5, "$name: InternalTimer set to call GetUpdate in 20 seconds to do reauth";
 		
-	}
+	}	
   return undef;
 }
 
